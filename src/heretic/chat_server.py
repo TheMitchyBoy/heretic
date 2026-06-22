@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -21,7 +22,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from .config import Settings
+from .config import QuantizationMethod, Settings
 from .model import Model
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,26 @@ class ChatSettings(Settings):
         )
 
 
+def configure_chat_settings(settings: Settings) -> Settings:
+    updates: dict[str, object] = {}
+
+    if not torch.cuda.is_available():
+        if settings.quantization == QuantizationMethod.BNB_4BIT:
+            logger.warning(
+                "No CUDA GPU detected; 4-bit quantization requires a GPU. "
+                "Falling back to HERETIC_QUANTIZATION=none."
+            )
+            updates["quantization"] = QuantizationMethod.NONE
+
+        if settings.device_map == "auto":
+            updates["device_map"] = "cpu"
+
+    if not updates:
+        return settings
+
+    return settings.model_copy(update=updates)
+
+
 def load_chat_settings() -> Settings:
     model_id = os.environ.get("HERETIC_MODEL")
     if not model_id:
@@ -53,7 +74,7 @@ def load_chat_settings() -> Settings:
             "HERETIC_MODEL environment variable is required for heretic-chat"
         )
 
-    return ChatSettings(model=model_id)
+    return configure_chat_settings(ChatSettings(model=model_id))
 
 
 model: Model | None = None
@@ -106,7 +127,7 @@ def load_model_in_background() -> None:
     try:
         loaded_settings = load_chat_settings()
         logger.info("Downloading and loading model %s...", loaded_settings.model)
-        loaded_model = Model(loaded_settings)
+        loaded_model = Model(loaded_settings, inference_only=True)
     except Exception as exc:  # noqa: BLE001 - surface startup failures via /api/health
         logger.exception("Failed to load model")
         with _model_lock:

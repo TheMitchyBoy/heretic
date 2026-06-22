@@ -63,12 +63,15 @@ class Model:
     tokenizer: PreTrainedTokenizerBase
     # Set for multimodal models, None for text-only ones.
     processor: ProcessorMixin | None
-    peft_config: LoraConfig
+    peft_config: LoraConfig | None
     dtype: torch.dtype
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, inference_only: bool = False):
         self.settings = settings
+        self.inference_only = inference_only
         self.needs_reload = False
+        self.peft_config = None
+        self.load_errors: list[str] = []
 
         self.revision_kwargs = {}
         if settings.model_commit is not None:
@@ -126,7 +129,7 @@ class Model:
                     device_map=settings.device_map,
                     max_memory=self.max_memory,
                     trust_remote_code=True
-                    if settings.model in self.trusted_models
+                    if self.inference_only or settings.model in self.trusted_models
                     else None,
                     **self.revision_kwargs,
                     **extra_kwargs,
@@ -139,23 +142,25 @@ class Model:
                 # because from_pretrained raises an exception otherwise.
                 self.trusted_models.add(settings.model)
 
-                # A test run can reveal dtype-related problems such as the infamous
-                # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
-                # (https://github.com/meta-llama/llama/issues/380).
-                self.generate(
-                    [
-                        Prompt(
-                            system=settings.system_prompt,
-                            user="What is 1+1?",
-                        )
-                    ],
-                    max_new_tokens=1,
-                )
+                if not self.inference_only:
+                    # A test run can reveal dtype-related problems such as the infamous
+                    # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                    # (https://github.com/meta-llama/llama/issues/380).
+                    self.generate(
+                        [
+                            Prompt(
+                                system=settings.system_prompt,
+                                user="What is 1+1?",
+                            )
+                        ],
+                        max_new_tokens=1,
+                    )
             except Exception as error:
                 self.model = None  # ty:ignore[invalid-assignment]
                 empty_cache()
 
                 formatted = format_exception(error)
+                self.load_errors.append(formatted)
                 if "\n" in formatted:
                     print(f"* [red]Failed:\n{formatted}[/]")
                 else:
@@ -169,14 +174,24 @@ class Model:
             break
 
         if self.model is None:
-            raise Exception("Failed to load model with all configured dtypes.")
+            details = "\n".join(self.load_errors)
+            raise Exception(
+                "Failed to load model with all configured dtypes."
+                + (f"\n{details}" if details else "")
+            )
 
-        self._apply_lora()
+        if self.inference_only:
+            print("* Inference-only mode (LoRA abliteration skipped)")
+        else:
+            self._apply_lora()
 
         # LoRA B matrices are initialized to zero by default in PEFT,
         # so we don't need to do anything manually.
 
         print(f"* Transformer model with [bold]{len(self.get_layers())}[/] layers")
+
+        if self.inference_only:
+            return
 
         all_components = {}
         for layer_index in range(len(self.get_layers())):
@@ -269,6 +284,7 @@ class Model:
     def get_merged_model(self) -> PreTrainedModel:
         # Guard against calling this method at the wrong time.
         assert isinstance(self.model, PeftModel)
+        assert self.peft_config is not None
 
         # Check if we need special handling for quantized models
         if self.settings.quantization == QuantizationMethod.BNB_4BIT:
@@ -467,6 +483,8 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
+        assert self.peft_config is not None
+
         if direction_index is None:
             refusal_direction = None
         else:

@@ -19,7 +19,7 @@ Deploy a ChatGPT-style web UI that streams responses from a Heretic model on [Ra
 | --- | --- | --- |
 | `HERETIC_MODEL` | Yes | `p-e-w/Qwen3-4B-Instruct-2507-heretic` |
 | `HF_TOKEN` | For gated/private models | `hf_...` |
-| `HERETIC_QUANTIZATION` | Recommended on limited VRAM | `bnb_4bit` |
+| `HERETIC_QUANTIZATION` | Use `bnb_4bit` **only with a GPU** | `bnb_4bit` |
 | `HERETIC_MAX_RESPONSE_LENGTH` | Optional | `4096` |
 | `HERETIC_SYSTEM_PROMPT` | Optional | `You are a helpful assistant.` |
 | `CHAT_API_KEY` | Optional auth for API routes | `your-secret-key` |
@@ -80,6 +80,31 @@ data: [DONE]
 ```
 
 If `CHAT_API_KEY` is set, include `X-API-Key: your-secret-key`.
+
+## Troubleshooting
+
+### `Failed to load model with all configured dtypes`
+
+This usually means the model could not load on your Railway hardware. Check the full error in Railway logs.
+
+Common causes:
+
+| Cause | Fix |
+| --- | --- |
+| **No GPU but `bnb_4bit` set** | Remove `HERETIC_QUANTIZATION` or set `HERETIC_QUANTIZATION=none`. 4-bit needs CUDA. |
+| **Model too large for RAM/VRAM** | Use a smaller model, add a GPU service, or set `HERETIC_QUANTIZATION=bnb_4bit` with GPU |
+| **Gated model** | Accept the license on Hugging Face and set `HF_TOKEN` |
+| **Wrong model name** | Double-check `HERETIC_MODEL` spelling |
+
+**Recommended Railway setup for most users:**
+
+```bash
+HERETIC_MODEL=p-e-w/Qwen3-4B-Instruct-2507-heretic
+HERETIC_QUANTIZATION=bnb_4bit
+HF_TOKEN=hf_...
+```
+
+Requires a **GPU** Railway service. CPU-only Railway cannot run 4-bit quantization.
 
 ## Notes
 
