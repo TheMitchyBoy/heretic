@@ -2,7 +2,9 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 import json
+import logging
 import os
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +23,8 @@ from pydantic_settings import (
 
 from .config import Settings
 from .model import Model
+
+logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 
@@ -54,6 +58,9 @@ def load_chat_settings() -> Settings:
 
 model: Model | None = None
 settings: Settings | None = None
+model_error: str | None = None
+model_loading = False
+_model_lock = threading.Lock()
 
 
 class ChatMessage(BaseModel):
@@ -79,17 +86,55 @@ def verify_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+def require_ready_model() -> Model:
+    if model_error is not None:
+        raise HTTPException(status_code=503, detail=model_error)
+
+    if model is None or model_loading:
+        raise HTTPException(status_code=503, detail="Model is still loading")
+
+    return model
+
+
+def load_model_in_background() -> None:
+    global model, settings, model_error, model_loading
+
+    with _model_lock:
+        model_loading = True
+        model_error = None
+
+    try:
+        loaded_settings = load_chat_settings()
+        logger.info("Downloading and loading model %s...", loaded_settings.model)
+        loaded_model = Model(loaded_settings)
+    except Exception as exc:  # noqa: BLE001 - surface startup failures via /api/health
+        logger.exception("Failed to load model")
+        with _model_lock:
+            model_error = str(exc)
+            model_loading = False
+        return
+
+    with _model_lock:
+        settings = loaded_settings
+        model = loaded_model
+        model_loading = False
+
+    logger.info("Model %s is ready", loaded_settings.model)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global model, settings
-
-    settings = load_chat_settings()
-    model = Model(settings)
+    thread = threading.Thread(target=load_model_in_background, daemon=True)
+    thread.start()
 
     yield
 
-    model = None
-    settings = None
+    global model, settings, model_error, model_loading
+    with _model_lock:
+        model = None
+        settings = None
+        model_error = None
+        model_loading = False
 
 
 app = FastAPI(title="Heretic Chat", lifespan=lifespan)
@@ -97,9 +142,28 @@ app = FastAPI(title="Heretic Chat", lifespan=lifespan)
 
 @app.get("/api/health")
 def health() -> dict[str, str | bool]:
+    if model_error is not None:
+        return {
+            "status": "error",
+            "model_loaded": False,
+            "model": settings.model
+            if settings
+            else os.environ.get("HERETIC_MODEL", ""),
+            "detail": model_error,
+        }
+
+    if model_loading or model is None:
+        return {
+            "status": "loading",
+            "model_loaded": False,
+            "model": settings.model
+            if settings
+            else os.environ.get("HERETIC_MODEL", ""),
+        }
+
     return {
-        "status": "ok",
-        "model_loaded": model is not None,
+        "status": "ready",
+        "model_loaded": True,
         "model": settings.model if settings else "",
     }
 
@@ -107,11 +171,21 @@ def health() -> dict[str, str | bool]:
 @app.get("/api/config")
 def config() -> dict[str, str]:
     if settings is None:
-        raise HTTPException(status_code=503, detail="Server is starting")
+        model_name = os.environ.get("HERETIC_MODEL", "")
+        system_prompt = os.environ.get(
+            "HERETIC_SYSTEM_PROMPT",
+            "You are a helpful assistant.",
+        )
+        return {
+            "model": model_name,
+            "system_prompt": system_prompt,
+            "status": "loading" if model_loading or model is None else "ready",
+        }
 
     return {
         "model": settings.model,
         "system_prompt": settings.system_prompt,
+        "status": "ready",
     }
 
 
@@ -119,22 +193,22 @@ def config() -> dict[str, str]:
 def chat(request: Request, body: ChatRequest) -> dict[str, str]:
     verify_api_key(request)
 
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded")
-
+    loaded_model = require_ready_model()
     messages = [message.model_dump() for message in body.messages]
-    response = model.stream_chat_response(messages)
+    response = loaded_model.stream_chat_response(messages)
 
     return {"message": response}
 
 
 async def stream_chat_events(messages: list[dict[str, str]]) -> AsyncIterator[str]:
-    if model is None:
-        yield f"data: {json.dumps({'error': 'Model is not loaded'})}\n\n"
+    try:
+        loaded_model = require_ready_model()
+    except HTTPException as exc:
+        yield f"data: {json.dumps({'error': exc.detail})}\n\n"
         return
 
     try:
-        for chunk in model.iter_chat_response(messages):
+        for chunk in loaded_model.iter_chat_response(messages):
             yield f"data: {json.dumps({'content': chunk})}\n\n"
     except Exception as exc:  # noqa: BLE001 - surface generation errors to the client
         yield f"data: {json.dumps({'error': str(exc)})}\n\n"
@@ -168,6 +242,11 @@ if WEB_DIR.is_dir():
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
 

@@ -23,6 +23,7 @@ RUN uv sync --frozen --no-dev --extra chat
 
 ENV PATH="/app/.venv/bin:$PATH" \
     HOST=0.0.0.0 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
     HERETIC_QUANTIZATION=bnb_4bit \
     HERETIC_MAX_RESPONSE_LENGTH=4096
 

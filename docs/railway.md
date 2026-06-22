@@ -27,6 +27,21 @@ Deploy a ChatGPT-style web UI that streams responses from a Heretic model on [Ra
 
 4. Deploy. Railway uses `Dockerfile` and `railway.toml` in this repo.
 
+## How long deploy takes
+
+Expect two slow phases on the **first** deploy:
+
+| Phase | Typical time | What is happening |
+| --- | --- | --- |
+| **Build image** | 10-20 min | Installing PyTorch, CUDA libraries, and Python dependencies |
+| **Load model** | 5-20 min | Downloading the model from Hugging Face and loading it into memory |
+
+The web server now starts immediately and returns `"status": "loading"` from `/api/health` while the model loads. Railway should mark the service healthy sooner instead of waiting for the full model download.
+
+Open your Railway URL during startup — the UI shows a loading screen and becomes ready automatically.
+
+Subsequent redeploys are faster when Docker layer cache is reused, but the model still downloads again unless you add persistent storage.
+
 The first deploy can take several minutes while the model downloads and loads.
 
 ## Run locally
