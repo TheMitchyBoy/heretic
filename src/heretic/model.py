@@ -2,8 +2,10 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 import math
+from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass
+from threading import Thread
 from typing import Any, Type, cast
 
 import bitsandbytes as bnb
@@ -25,6 +27,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
     ProcessorMixin,
+    TextIteratorStreamer,
     TextStreamer,
 )
 from transformers.generation import (
@@ -818,6 +821,44 @@ class Model:
             logprobs.append(self.get_logprobs(batch))
 
         return torch.cat(logprobs, dim=0)
+
+    def iter_chat_response(self, chat: list[dict[str, str]]) -> Iterator[str]:
+        chat_prompt = cast(
+            str,
+            self.tokenizer.apply_chat_template(
+                chat,
+                add_generation_prompt=True,
+                tokenize=False,
+            ),
+        )
+
+        inputs = self.tokenizer(
+            chat_prompt,
+            return_tensors="pt",
+            return_token_type_ids=False,
+        ).to(self.model.device)
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer,  # ty:ignore[invalid-argument-type]
+            skip_prompt=True,
+            skip_special_tokens=True,
+        )
+
+        generation_kwargs = {
+            **inputs,
+            "streamer": streamer,
+            "max_new_tokens": max(self.settings.max_response_length, 4096),
+        }
+
+        def generate() -> None:
+            self.model.generate(**generation_kwargs)  # ty:ignore[call-non-callable]
+
+        thread = Thread(target=generate)
+        thread.start()
+
+        yield from streamer
+
+        thread.join()
 
     def stream_chat_response(self, chat: list[dict[str, str]]) -> str:
         # This cast is valid because str is the return type

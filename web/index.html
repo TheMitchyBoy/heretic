@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Heretic Chat</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>Heretic Chat</h1>
+          <button id="new-chat" type="button">New chat</button>
+        </div>
+        <p id="model-name" class="model-name">Loading model...</p>
+      </aside>
+
+      <main class="chat">
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="prompt"
+            rows="1"
+            placeholder="Message Heretic..."
+            autocomplete="off"
+          ></textarea>
+          <button id="send" type="submit" aria-label="Send message">Send</button>
+        </form>
+      </main>
+    </div>
+
+    <script src="/assets/app.js" type="module"></script>
+  </body>
+</html>

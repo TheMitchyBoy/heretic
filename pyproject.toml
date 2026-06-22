@@ -43,6 +43,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+chat = [
+    "fastapi~=0.116",
+    "uvicorn[standard]~=0.35",
+]
 research = [
     "geom-median~=0.1",
     "imageio~=2.37",
@@ -66,6 +70,7 @@ Changelog = "https://github.com/p-e-w/heretic/releases"
 
 [project.scripts]
 heretic = "heretic.main:main"
+heretic-chat = "heretic.chat_server:main"
 
 [build-system]
 requires = ["uv_build>=0.8.11,<0.9.0"]
